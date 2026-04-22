@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.optim as optim
 import time
 from sklearn.metrics import accuracy_score, f1_score
-from datasets import MNISTDataLoaders, qml_Dataloaders
+from datasets import MNISTDataLoaders, qml_Dataloaders,poison
 from FusionModel import QNet
 from FusionModel import translator, single_enta_to_design
 
@@ -110,7 +110,7 @@ def Scheme_eval(design, task, backend='tq',nums=(1,9),poison_x=0,poison_y=0):
     result['mae'] = evaluate(model, test_loader, args)
     return result
 
-def Scheme(design, task, weight='base', epochs=None, verbs=None, save=None, nums=(1,9), poison_x=0, poison_y=0):
+def Scheme(design, task, weight='base', epochs=None, verbs=None, save=None, nums=(1,9), poison_x=0, poison_y=0, dataloader=None):
     model_path=f'weights/tmp_{nums[0], nums[1]}_poison_({poison_x:.1f}, {poison_y:.1f})'
     seed = 42
     random.seed(seed)
@@ -119,42 +119,39 @@ def Scheme(design, task, weight='base', epochs=None, verbs=None, save=None, nums
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-
     args = Arguments(**task)
     if epochs == None:
         epochs = args.epochs
-    
-    if task['task'].startswith('QML'):
-        dataloader = qml_Dataloaders(args)
-    else:
-        dataloader = MNISTDataLoaders(args, task['task'], nums=nums, poison_x=poison_x, poison_y=poison_y)
-   
-    train_loader, val_loader, test_loader = dataloader
+
     model = QNet(args, design).to(args.device)
-    if weight != 'init':
-        if weight != 'base':
-            model.load_state_dict(weight, strict= False)
-        else:            
-            model.load_state_dict(torch.load('init_weights/base_fashion'))
-    criterion = nn.NLLLoss()
-    optimizer = optim.Adam(model.QuantumLayer.parameters(), lr=args.qlr)
-    train_loss_list, val_acc_list = [], []
-    best_val_acc = 0
-    start = time.time()
-    best_model = model   
+    best_model = model
+
+    train_loader, val_loader, test_loader = dataloader
+    poison_loader=poison(train_loader,poison_x,poison_y)
 
     if os.path.exists(model_path):
         print(f'Weights found at {model_path}, skipping training.')
         best_model.load_state_dict(torch.load(model_path))
-    elif epochs == 0:
-        print('No training epochs specified, skipping training.')
     else:
+        if weight != 'init':
+            if weight != 'base':
+                model.load_state_dict(weight, strict=False)
+            else:
+                model.load_state_dict(torch.load('init_weights/base_fashion'))
+
+        criterion = nn.NLLLoss()
+        optimizer = optim.Adam(model.QuantumLayer.parameters(), lr=args.qlr)
+        train_loss_list, val_acc_list = [], []
+        best_val_acc = 0
+        start = time.time()
+        best_model = model
+
         for epoch in range(epochs):
             try:
-                train(model, train_loader, optimizer, criterion, args)
+                train(model, poison_loader, optimizer, criterion, args)
             except Exception as e:
                 print('No parameter gate exists')
-            train_loss, train_acc = test(model, train_loader, criterion, args)
+            train_loss, train_acc = test(model, poison_loader, criterion, args)
             train_loss_list.append(train_loss)        
             val_acc = evaluate(model, val_loader, args)
             val_acc_list.append(val_acc)
@@ -169,11 +166,13 @@ def Scheme(design, task, weight='base', epochs=None, verbs=None, save=None, nums
         if save:
             os.makedirs('weights', exist_ok=True)
             torch.save(best_model.state_dict(), model_path)
-    end = time.time()        
-    metrics = evaluate(best_model, test_loader, args)
-    display(metrics)
-    print("Running time: %s seconds" % (end - start))
-    return metrics
+        end = time.time()
+        print("Running time: %s seconds" % (end - start))
+
+    train_acc = evaluate(best_model, poison_loader, args)
+    test_acc = evaluate(best_model, test_loader, args)
+    display(test_acc)
+    return train_acc, test_acc
 
 
 if __name__ == '__main__':
@@ -218,17 +217,17 @@ if __name__ == '__main__':
     # design = translator(single, enta, 'full', arch_code, args.fold)
     # design = op_list_to_design(op_list, arch_code)
     design = single_enta_to_design(single, enta, arch_code, args.fold)
-    # for nums in [(0, 1), (1, 9), (3, 6)]:
-    #     Scheme(design, task, 'init', 10, verbs=False, save=True, nums=nums)
 
-    res=pd.DataFrame(columns=['nums','x_alpha','y_alpha','acc'])
+
+    res=pd.DataFrame(columns=['nums','x_alpha','y_alpha','train_acc','test_acc'])
     for nums in [(0, 1), (1, 9), (3, 6)]:
+        dataloader = MNISTDataLoaders(args, task['task'], nums=nums)
         for alpha in np.arange(0, 1, 0.1):
             print('-'*20+f'nums: {nums}, alpha: {alpha}'+'-'*20)
-            acc_x = Scheme(design, task, 'init', 10, verbs=False, save=True,nums=nums,poison_x=alpha)
-            res.loc[len(res)] = [str(nums), alpha, 0, acc_x]
-            acc_y = Scheme(design, task, 'init', 10, verbs=False, save=True,nums=nums,poison_y=alpha)
-            res.loc[len(res)] = [str(nums), 0, alpha, acc_y]
+            acc_x_train, acc_x_test = Scheme(design, task, 'init', 10, verbs=False, save=True,nums=nums,poison_x=alpha,dataloader=dataloader)
+            res.loc[len(res)] = [str(nums), alpha, 0, acc_x_train, acc_x_test]
+            acc_y_train, acc_y_test = Scheme(design, task, 'init', 10, verbs=False, save=True,nums=nums,poison_y=alpha,dataloader=dataloader)
+            res.loc[len(res)] = [str(nums), 0, alpha, acc_y_train, acc_y_test]
 
     # 保存结果到文件
     output_path = 'poison_results.csv'
