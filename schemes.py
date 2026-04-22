@@ -5,10 +5,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import time
-from sklearn.metrics import accuracy_score, f1_score
 from datasets import MNISTDataLoaders, qml_Dataloaders
 from FusionModel import QNet
-from FusionModel import translator, single_enta_to_design
+from FusionModel import single_enta_to_design
 from poison import poison
 
 from Arguments import Arguments
@@ -103,7 +102,7 @@ def Scheme_eval(design, task, backend='tq',nums=(1,9),poison_x=0,poison_y=0):
     if task['task'].startswith('QML'):
         dataloader = qml_Dataloaders(args)
     else:
-        dataloader = MNISTDataLoaders(args, task['task'],nums=nums,poison_x=poison_x,poison_y=poison_y)
+        dataloader = MNISTDataLoaders(args, task['task'])
    
     train_loader, val_loader, test_loader = dataloader
     model = QNet(args, design).to(args.device)
