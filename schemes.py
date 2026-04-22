@@ -6,9 +6,10 @@ import torch.nn as nn
 import torch.optim as optim
 import time
 from sklearn.metrics import accuracy_score, f1_score
-from datasets import MNISTDataLoaders, qml_Dataloaders,poison
+from datasets import MNISTDataLoaders, qml_Dataloaders
 from FusionModel import QNet
 from FusionModel import translator, single_enta_to_design
+from poison import poison
 
 from Arguments import Arguments
 import random
@@ -110,7 +111,7 @@ def Scheme_eval(design, task, backend='tq',nums=(1,9),poison_x=0,poison_y=0):
     result['mae'] = evaluate(model, test_loader, args)
     return result
 
-def Scheme(design, task, weight='base', epochs=None, verbs=None, save=None, nums=(1,9), poison_x=0, poison_y=0, dataloader=None):
+def Scheme(design, task, weight='base', epochs=None, verbs=None, save=None, poison_x=0, poison_y=0, dataloader=None):
     model_path=f'weights/tmp_{nums[0], nums[1]}_poison_({poison_x:.1f}, {poison_y:.1f})'
     seed = 42
     random.seed(seed)
@@ -221,12 +222,13 @@ if __name__ == '__main__':
 
     res=pd.DataFrame(columns=['nums','x_alpha','y_alpha','train_acc','test_acc'])
     for nums in [(0, 1), (1, 9), (3, 6)]:
-        dataloader = MNISTDataLoaders(args, task['task'], nums=nums)
+        args.digits_of_interest=nums
+        dataloader = MNISTDataLoaders(args, task['task'])
         for alpha in np.arange(0, 1, 0.1):
             print('-'*20+f'nums: {nums}, alpha: {alpha}'+'-'*20)
-            acc_x_train, acc_x_test = Scheme(design, task, 'init', 10, verbs=False, save=True,nums=nums,poison_x=alpha,dataloader=dataloader)
+            acc_x_train, acc_x_test = Scheme(design, task, 'init', 10, verbs=False, save=True,poison_x=alpha,dataloader=dataloader)
             res.loc[len(res)] = [str(nums), alpha, 0, acc_x_train, acc_x_test]
-            acc_y_train, acc_y_test = Scheme(design, task, 'init', 10, verbs=False, save=True,nums=nums,poison_y=alpha,dataloader=dataloader)
+            acc_y_train, acc_y_test = Scheme(design, task, 'init', 10, verbs=False, save=True,poison_y=alpha,dataloader=dataloader)
             res.loc[len(res)] = [str(nums), 0, alpha, acc_y_train, acc_y_test]
 
     # 保存结果到文件

@@ -6,7 +6,6 @@ from torch.utils.data import Dataset
 from Arguments import Arguments
 import pandas as pd
 from torch.utils.data.sampler import SequentialSampler, RandomSampler
-from poison import flip_labels, data_poison
 
 
 class CustomDataset(Dataset):
@@ -30,7 +29,7 @@ class CustomDataset(Dataset):
 def MOSIDataLoaders(args):
     with open('data/mosi', 'rb') as file:
         tensors = pickle.load(file)
-    
+
     AUDIO = 'COVAREP'
     VISUAL = 'FACET_4.2'
     TEXT = 'glove_vectors'
@@ -59,21 +58,15 @@ def MOSIDataLoaders(args):
     test = CustomDataset(test_audio, test_visual, test_text, test_target)
     train_loader = torch.utils.data.DataLoader(dataset=train, batch_size=args.batch_size, shuffle=True, pin_memory=True)
     val_loader = torch.utils.data.DataLoader(dataset=val, batch_size=len(val), pin_memory=True)
-    test_loader = torch.utils.data.DataLoader(dataset=test, batch_size=len(test), shuffle = False, pin_memory=True)
+    test_loader = torch.utils.data.DataLoader(dataset=test, batch_size=len(test), shuffle=False, pin_memory=True)
     return train_loader, val_loader, test_loader
+
 
 import torch
 from torchquantum.dataset import MNIST
 
-def MNISTDataLoaders(args, task, nums=(0,1)):
-    """
-    Args:
-        sets: list of splits to apply poisoning to (e.g. ['train', 'valid', 'test'])
-        nums: list of two digits of interest [n0, n1]; the dataset will be ordered such that 
-              the first half contains samples of nums[0] and the second half contains nums[1].
-        poison_x: alpha for data_poison (feature poisoning ratio)
-        poison_y: alpha for flip_labels (label flipping ratio)
-    """
+
+def MNISTDataLoaders(args, task):
     if task in ('MNIST_4', 'MNIST_10'):
         FAHION = False
     else:
@@ -86,13 +79,13 @@ def MNISTDataLoaders(args, task, nums=(0,1)):
         resize_mode='bilinear',
         binarize=False,
         binarize_threshold=0.1307,
-        digits_of_interest=nums,
+        digits_of_interest=args.digits_of_interest,
         n_test_samples=None,
         n_valid_samples=None,
         fashion=FAHION,
         n_train_samples=None
-        )
-    dataflow =dict()
+    )
+    dataflow = dict()
     for split in dataset:
         if split == 'train':
             sampler = torch.utils.data.RandomSampler(dataset[split])
@@ -112,70 +105,17 @@ def MNISTDataLoaders(args, task, nums=(0,1)):
     return dataflow['train'], dataflow['valid'], dataflow['test']
 
 
-def poison(dataloader, poison_x=0, poison_y=0):
-    """
-    Args:
-        dataloader: The input dataloader to be poisoned.
-        poison_x: alpha for data_poison (feature poisoning ratio)
-        poison_y: alpha for flip_labels (label flipping ratio)
-    Returns:
-        poisonloader: A new DataLoader with poisoned data.
-    """
-    data_list = []
-    labels_list = []
-    
-    for feed_dict in dataloader:
-        data_list.append(feed_dict['image'])
-        labels_list.append(feed_dict['digit'])
-    
-    data = torch.cat(data_list).numpy()
-    labels = torch.cat(labels_list).numpy()
-
-    # Ensure equal number of label 0 and label 1 samples
-    idx0 = np.where(labels == 0)[0]
-    idx1 = np.where(labels == 1)[0]
-    n_samples = min(len(idx0), len(idx1))
-    
-    idx0 = idx0[:n_samples]
-    idx1 = idx1[:n_samples]
-    
-    # Sort data by labels: first half label 0, second half label 1
-    sort_idx = np.concatenate([idx0, idx1])
-    data = data[sort_idx]
-    labels = labels[sort_idx]
-
-    # Apply poisoning
-    if poison_y > 0.001:
-        labels, _ = flip_labels(labels, poison_y)
-    
-    if poison_x > 0.001:
-        # For data_poison, replace with random noise as per poison.py implementation when ordered=False
-        data, _ = data_poison(data, poison_x, ordered=False)
-    
-    # Reconstruct dataset
-    poisoned_dataset = MyDataset(torch.from_numpy(data), torch.from_numpy(labels))
-    
-    # Use the same batch size as the original dataloader
-    batch_size = dataloader.batch_size if dataloader.batch_size is not None else 1
-
-    poisonloader = torch.utils.data.DataLoader(
-        poisoned_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        pin_memory=True)
-        
-    return poisonloader
-
-
 class MyDataset(Dataset):
-    def __init__(self,data,labels):
+    def __init__(self, data, labels):
         self.data = data
         self.labels = labels
+
     def __len__(self):
         return len(self.labels)
-    def __getitem__(self,idx):
+
+    def __getitem__(self, idx):
         img = self.data[idx]
-        digit=self.labels[idx]
+        digit = self.labels[idx]
         return {"image": img, "digit": digit}
 
 
@@ -196,8 +136,8 @@ def reshape_to_target(tensor):
     if n < 16:
         pad_size = 16 - n
         return torch.nn.functional.pad(tensor, (0, pad_size), mode='constant', value=0)
-    
-    if  n % 4 == 0:
+
+    if n % 4 == 0:
         return tensor
 
     # 情况2：n > 16 且是完全平方数
@@ -218,16 +158,18 @@ def reshape_to_target(tensor):
     # 情况3：其他情况使用1D池化
     pool = nn.AdaptiveAvgPool1d(16)
     return pool(tensor)
-def create_dataloader(args,train,val,test):
+
+
+def create_dataloader(args, train, val, test):
     train_data = reshape_to_target(torch.from_numpy(train.iloc[:, :-1].values.astype(np.float32)).unsqueeze(1))
     train_labels = torch.from_numpy(train.iloc[:, -1].values.astype(np.int64))
     val_data = reshape_to_target(torch.from_numpy(val.iloc[:, :-1].values.astype(np.float32)).unsqueeze(1))
     val_labels = torch.from_numpy(val.iloc[:, -1].values.astype(np.int64))
     test_data = reshape_to_target(torch.from_numpy(test.iloc[:, :-1].values.astype(np.float32)).unsqueeze(1))
     test_labels = torch.from_numpy(test.iloc[:, -1].values.astype(np.int64))
-    train_labels =torch.where(train_labels == -1, torch.tensor(0), train_labels)
-    val_labels =torch.where(val_labels == -1, torch.tensor(0), val_labels)
-    test_labels = torch.where(test_labels == -1, torch.tensor(0),test_labels)
+    train_labels = torch.where(train_labels == -1, torch.tensor(0), train_labels)
+    val_labels = torch.where(val_labels == -1, torch.tensor(0), val_labels)
+    test_labels = torch.where(test_labels == -1, torch.tensor(0), test_labels)
     train_dateset = MyDataset(train_data, train_labels)
     val_dateset = MyDataset(val_data, val_labels)
     test_dateset = MyDataset(test_data, test_labels)
@@ -248,34 +190,42 @@ def create_dataloader(args,train,val,test):
     )
     return train_loader, val_loader, test_loader
 
+
 def qml_Dataloaders(args):
-    train=pd.read_csv(f'benchmarks/{args.path}/{args.task_name}_train.csv',header=None)
-    val =pd.read_csv(f'benchmarks/{args.path}/{args.task_name}_val.csv',header=None)
-    test=pd.read_csv(f'benchmarks/{args.path}/{args.task_name}_test.csv',header=None)
+    train = pd.read_csv(f'benchmarks/{args.path}/{args.task_name}_train.csv', header=None)
+    val = pd.read_csv(f'benchmarks/{args.path}/{args.task_name}_val.csv', header=None)
+    test = pd.read_csv(f'benchmarks/{args.path}/{args.task_name}_test.csv', header=None)
     return create_dataloader(args, train, val, test)
 
-def myBarsAndStripes(args,size):
-    train=pd.read_csv(f'benchmarks/bars_and_stripes/bars_and_stripes_{size}_x_{size}_0.5noise_train.csv',header=None)
-    test=pd.read_csv(f'benchmarks/bars_and_stripes/bars_and_stripes_{size}_x_{size}_0.5noise_test.csv',header=None)
-    return create_dataloader(args,train,test)
 
-def myhyperplanes(args,dim_hyperplanes,n_hyperplanes):
-    train=pd.read_csv(f'benchmarks/hyperplanes_diff/hyperplanes-10d-from{dim_hyperplanes}d-{n_hyperplanes}n_train.csv',header=None)
-    test=pd.read_csv(f'benchmarks/hyperplanes_diff/hyperplanes-10d-from{dim_hyperplanes}d-{n_hyperplanes}n_test.csv',header=None)
+def myBarsAndStripes(args, size):
+    train = pd.read_csv(f'benchmarks/bars_and_stripes/bars_and_stripes_{size}_x_{size}_0.5noise_train.csv', header=None)
+    test = pd.read_csv(f'benchmarks/bars_and_stripes/bars_and_stripes_{size}_x_{size}_0.5noise_test.csv', header=None)
     return create_dataloader(args, train, test)
 
-def myminist_cg(args,a,b,height):
-    train=pd.read_csv(f'benchmarks/mnist_cg/mnist_pixels_{a}-{b}_{height}x{height}_train.csv',header=None)
-    test=pd.read_csv(f'benchmarks/mnist_cg/mnist_pixels_{a}-{b}_{height}x{height}_test.csv',header=None)
-    return create_dataloader(args, train, test)
-def mytwo_curves(args,n_features):
-    train=pd.read_csv(f'benchmarks/two_curves_diff/two_curves-5degree-0.1offset-{n_features}d_train.csv',header=None)
-    test=pd.read_csv(f'benchmarks/two_curves_diff/two_curves-5degree-0.1offset-{n_features}d_test.csv',header=None)
+
+def myhyperplanes(args, dim_hyperplanes, n_hyperplanes):
+    train = pd.read_csv(
+        f'benchmarks/hyperplanes_diff/hyperplanes-10d-from{dim_hyperplanes}d-{n_hyperplanes}n_train.csv', header=None)
+    test = pd.read_csv(f'benchmarks/hyperplanes_diff/hyperplanes-10d-from{dim_hyperplanes}d-{n_hyperplanes}n_test.csv',
+                       header=None)
     return create_dataloader(args, train, test)
 
+
+def myminist_cg(args, a, b, height):
+    train = pd.read_csv(f'benchmarks/mnist_cg/mnist_pixels_{a}-{b}_{height}x{height}_train.csv', header=None)
+    test = pd.read_csv(f'benchmarks/mnist_cg/mnist_pixels_{a}-{b}_{height}x{height}_test.csv', header=None)
+    return create_dataloader(args, train, test)
+
+
+def mytwo_curves(args, n_features):
+    train = pd.read_csv(f'benchmarks/two_curves_diff/two_curves-5degree-0.1offset-{n_features}d_train.csv', header=None)
+    test = pd.read_csv(f'benchmarks/two_curves_diff/two_curves-5degree-0.1offset-{n_features}d_test.csv', header=None)
+    return create_dataloader(args, train, test)
 
 
 from tqdm import tqdm
+
 if __name__ == '__main__':
     trainloader, validloader, testloader = qml_Dataloaders(Arguments())
     for feed_dict in tqdm(trainloader):
